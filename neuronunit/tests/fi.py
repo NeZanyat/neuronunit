@@ -13,15 +13,9 @@ import dask.bag as db
 import neuronunit
 from neuronunit.optimization.data_transport_container import DataTC
 from neuronunit.models.reduced import ReducedModel
-from .base import np, pq, ncap, VmTest, scores, AMPL, DELAY, DURATION
+from .base import np, pq, ncap, VmTest, scores
 
 N_CPUS = multiprocessing.cpu_count()
-TOLERANCE = 1  # Search tolerance in `self.units`, e.g. pA.
-DURATION = 1000*pq.ms
-STOP_TIME = DELAY + DURATION + 200*pq.ms
-DEFAULT_INJECTED_SQUARE_CURRENT = {'amplitude': 100.0*pq.pA,
-                                   'delay': DELAY,
-                                   'duration': DURATION}
 
 
 class RheobaseTest(VmTest):
@@ -52,8 +46,16 @@ class RheobaseTest(VmTest):
     ephysprop_name = 'Rheobase'
     score_type = scores.RatioScore
 
+    default_params = dict(VmTest.default_params)
+    default_params.update({'amplitude': 100*pq.pA,
+                           'duration': 1000*pq.ms,
+                           'tolerance': 1.0*pq.pA})
+
+    params_schema = dict(VmTest.params_schema)
+    params_schema.update({'tolerance': {'type': 'current', 'min': 1, 'required': False}})
+
     def condition_model(self, model):
-        model.set_run_params(t_stop=STOP_TIME)
+        model.set_run_params(t_stop=self.params['tmax'])
 
     def generate_prediction(self, model):
         """Implement sciunit.Test.generate_prediction."""
@@ -93,7 +95,7 @@ class RheobaseTest(VmTest):
 
         def f(ampl):
             if float(ampl) not in lookup:
-                current = DEFAULT_INJECTED_SQUARE_CURRENT.copy()
+                current = self.get_injected_square_current()
                 current['amplitude'] = ampl
                 model.inject_square_current(current)
                 n_spikes = model.get_spike_count()
@@ -129,7 +131,8 @@ class RheobaseTest(VmTest):
 
             if len(supra) and len(sub):
                 delta = float(supra.min()) - float(sub.max())
-                if delta < TOLERANCE or (str(supra.min()) == str(sub.max())):
+                tolerance = float(self.params['tolerance'].rescale(pq.pA))
+                if delta < tolerance or (str(supra.min()) == str(sub.max())):
                     break
 
             if i >= max_iters:
@@ -185,7 +188,7 @@ class RheobaseTestP(RheobaseTest):
     get_rheobase_vm = True
 
     def condition_model(self, model):
-        model.set_run_params(t_stop=STOP_TIME)
+        model.set_run_params(t_stop=self.params['tmax'])
 
     def generate_prediction(self, model):
         """Generate the test prediction."""
@@ -219,7 +222,7 @@ class RheobaseTestP(RheobaseTest):
             prediction['value'] = float(rheobase) * pq.pA
             if self.get_rheobase_vm:
                 print("Getting rheobase vm")
-                c = DEFAULT_INJECTED_SQUARE_CURRENT.copy()
+                c = self.get_injected_square_current()
                 c['amplitude'] = prediction['value']
                 model.inject_square_current(c)
                 self.rheobase_vm = model.get_membrane_potential()
@@ -228,9 +231,11 @@ class RheobaseTestP(RheobaseTest):
             self.rheobase_vm = None
         return prediction
 
+
 """
 Functions to support the parallel rheobase search.
 """
+
 
 def check_fix_range(dtc):
     """Check for the rheobase value.
@@ -271,6 +276,7 @@ def check_fix_range(dtc):
     dtc.current_steps = steps
     return dtc
 
+
 def get_sub_supra(lookup):
     """Get subthreshold and suprathreshold current values."""
     sub, supra = [], []
@@ -283,6 +289,7 @@ def get_sub_supra(lookup):
     sub = np.array(sorted(list(set(sub))))
     supra = np.array(sorted(list(set(supra))))
     return sub, supra
+
 
 def check_current(dtc):
     """Check the response to the proposed current and count spikes.
@@ -309,7 +316,7 @@ def check_current(dtc):
 
     ampl = float(dtc.ampl)
     if ampl not in dtc.lookup or len(dtc.lookup) == 0:
-        current = DEFAULT_INJECTED_SQUARE_CURRENT.copy()
+        current = RheobaseTest.get_default_injected_square_current()
         uc = {'amplitude': ampl*pq.pA}
         current.update(uc)
         dtc.run_number += 1
@@ -318,6 +325,7 @@ def check_current(dtc):
         n_spikes = model.get_spike_count()
         dtc.lookup[float(ampl)] = n_spikes
     return dtc
+
 
 def init_dtc(dtc):
     """Exploit memory of last model in genes."""
@@ -353,6 +361,7 @@ def init_dtc(dtc):
         dtc.current_steps = steps_current
         dtc.initiated = True
     return dtc
+
 
 def find_rheobase(self, dtc):
     assert os.path.isfile(dtc.model_path),\
@@ -390,7 +399,8 @@ def find_rheobase(self, dtc):
         sub, supra = get_sub_supra(dtc.lookup)
         if len(supra) and len(sub):
             delta = float(supra.min()) - float(sub.max())
-            if delta < TOLERANCE or (str(supra.min()) ==
+            tolerance = self.params['tolerance'].rescale(pq.pA)
+            if delta < tolerance or (str(supra.min()) ==
                                      str(sub.max())):
                 dtc.rheobase = supra.min()*pq.pA
                 dtc.boolean = True
